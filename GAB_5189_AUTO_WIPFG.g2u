@@ -1,0 +1,242 @@
+Program.Sub.ScreenSU.Start
+Gui.F_MULTIPC_WIP..Create
+Gui.F_MULTIPC_WIP..Size(10485,6570)
+Gui.F_MULTIPC_WIP..MinX(0)
+Gui.F_MULTIPC_WIP..MinY(0)
+Gui.F_MULTIPC_WIP..Position(0,0)
+Gui.F_MULTIPC_WIP..BackColor(-2147483633)
+Gui.F_MULTIPC_WIP..MousePointer(0)
+Gui.F_MULTIPC_WIP..Caption("Multi Piece WIP To Finished Goods")
+Gui.F_MULTIPC_WIP.txtJob.Create(TextBox,"",True,780,300,0,345,660,True,0,"Arial",8,-2147483643,1)
+Gui.F_MULTIPC_WIP.txtSuffix.Create(TextBox,"",True,450,300,0,1290,660,True,0,"Arial",8,-2147483643,1)
+Gui.F_MULTIPC_WIP.lblDash.Create(Label,"-",True,135,255,0,1140,735,True,0,"Arial",8,-2147483633,0)
+Gui.F_MULTIPC_WIP.cmdWOBrowser.Create(Button)
+Gui.F_MULTIPC_WIP.cmdWOBrowser.Size(390,375)
+Gui.F_MULTIPC_WIP.cmdWOBrowser.Position(1845,615)
+Gui.F_MULTIPC_WIP.cmdWOBrowser.Caption("^")
+Gui.F_MULTIPC_WIP.lblWorkOrder.Create(Label,"Work Order",True,1095,255,0,345,360,True,0,"Arial",8,-2147483633,0)
+Gui.F_MULTIPC_WIP.txtDescription.Create(TextBox,"",True,3750,300,0,2580,660,True,0,"Arial",8,-2147483643,1)
+Gui.F_MULTIPC_WIP.lblDescription.Create(Label,"Work Order Description",True,1935,255,0,2610,360,True,0,"Arial",8,-2147483633,0)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+Program.External.Include.Library("2003.lib")
+Program.External.Include.Library("7100.lib")
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Written by TMAY - No quote - Done onsite and via VT time
+'Modified 6-26-18, need to allocate to the sales order after WIP'ing if tied to a sales order.
+
+v.Local.sTotalQty.Declare
+v.Local.sSQL.Declare
+v.Local.sReturn.Declare
+V.Local.iCount.Declare
+v.Local.sPieceInfo.Declare
+V.Local.sWO.Declare
+V.Local.sPieceCost.Declare
+V.Local.sPrice.Declare
+V.Local.sCloseJobFlag.Declare
+V.Local.sUpdateInvFlag.Declare
+V.Local.fLotBinQty.Declare
+V.Local.fLength_FT.Declare
+v.Local.fLength_IN.Declare
+v.Local.fLength_Total.Declare
+v.Local.sCallWrapperReturn.Declare
+v.Local.sCallWrapperError.Declare
+v.Local.sLotBinNotMatchingError.Declare
+v.Local.sPartwRev.Declare
+v.Local.bMultiPiece.Declare
+V.Local.sYear.Declare
+V.Local.sMonth.Declare
+V.Local.sDay.Declare
+v.Local.sSerial.Declare
+v.Local.fTotalQty.Declare
+'global
+V.Global.sPart.Declare
+v.Global.sRevision.Declare
+V.Global.sLocation.Declare
+V.Global.sJob.Declare
+V.Global.sSuffix.Declare
+V.Global.sBin.Declare
+
+'check to make sure they have ARC 4474 installed, need GAB_4474_Multi_Pc_WO table.
+f.Intrinsic.Control.CallSub(Check_Table)
+
+'Hard coded per customers request
+v.Global.sBin.Set("SA")
+V.Local.sCloseJobFlag.Set("Y")
+V.Local.sUpdateInvFlag.Set("Y")
+
+v.Local.bMultiPiece.Set(False)
+f.Intrinsic.String.Format(v.Ambient.Date,"YYYY",v.Local.sYear)
+f.Intrinsic.String.Format(v.Ambient.Date,"MM",v.Local.sMonth)
+f.Intrinsic.String.Format(v.Ambient.Date,"DD",v.Local.sDay)
+
+'INVOKE WAIT DIALOG
+F.Intrinsic.UI.InvokeWaitDialog("Processing WIP to FG...","Processing")
+
+'open connection
+f.ODBC.Connection!conx.openconnection(v.Ambient.PDSN,v.Ambient.PUser,v.Ambient.PPass)
+
+'retrieve job and suffix from switch passed from calling program and split into job and suffix.
+V.Local.sWO.Set(V.Caller.Switches)
+f.Intrinsic.String.Split(v.Local.sWO,"!*!",v.Local.sWO)
+V.Global.sJob.set(v.Local.sWO(0))
+V.Global.sSuffix.set(v.Local.sWO(1).TRIM)
+f.Intrinsic.Control.If(v.Local.sWO(2),=,Y)
+	v.Local.bMultiPiece.Set(True)
+f.Intrinsic.Control.EndIf
+
+'Check to see if there as been any partial wip's done, if so end program
+f.Intrinsic.String.Build("SELECT QTY_COMPLETED FROM V_JOB_HEADER WHERE JOB = '{0}' AND RTRIM(SUFFIX) = '{1}';",V.Global.sJob,V.Global.sSuffix,V.Local.sSQL)
+F.ODBC.Connection!conx.EXECUTEANDRETURN(V.Local.sSQL,V.Local.sReturn)
+F.Intrinsic.Control.If(V.Local.sReturn,<>,0)
+	F.Intrinsic.UI.Msgbox("Work Order is Multi-Piece and already has a partial WIP completed.","Partial WIP Not Allowed")
+	f.Intrinsic.Control.End
+F.Intrinsic.Control.EndIf
+
+'Get necessary info from work order for call wrapper - Part, Location, Qty, Price
+f.Intrinsic.String.Build("SELECT PART, LOCATION, QTY_ORDER, AMT_PRICE_PER_UNIT FROM V_JOB_HEADER WHERE JOB = '{0}' AND RTRIM(SUFFIX) = '{1}';",V.Global.sJob,V.Global.sSuffix,V.Local.sSQL)
+F.ODBC.Connection!conx.EXECUTEANDRETURN(V.Local.sSQL,V.Local.sReturn)
+
+'SPLIT RETURNED RECORD AND ASSIGN VALUES TO RESPECTIVE VARIABLES
+F.Intrinsic.String.Split(V.Local.sReturn,"*!*",V.Local.sReturn)
+F.Intrinsic.String.Left(v.Local.sReturn(0),17,v.Global.sPart)
+f.Intrinsic.String.Mid(v.Local.sReturn(0),18,3,v.Global.sRevision)
+v.Local.sPartwRev.Set(v.Local.sReturn(0))
+V.Global.sLocation.Set(v.Local.sReturn(1))
+v.Local.sTotalQty.Set(v.Local.sReturn(2))
+v.Local.sPrice.Set(v.Local.sReturn(3))
+
+'Calculate the cost per piece of the work order
+f.Intrinsic.String.Build("SELECT SUM(AMT_MATERIAL + AMT_LABOR + AMT_OVERHEAD + OUTS + OTHER + FREIGHT) AS COST FROM V_JOB_HEADER WHERE JOB = '{0}' AND RTRIM(SUFFIX) = '{1}';",V.Global.sJob,V.Global.sSuffix,v.Local.sSQL)
+f.ODBC.Connection!conx.executeandreturn(v.Local.sSQL,v.Local.sPieceCost)
+'see if cost is 0, if so through message and end
+F.Intrinsic.Control.If(V.Local.sPieceCost,=,0)
+	F.Intrinsic.UI.Msgbox("Work Order cost cannot be 0.","No Cost on Work Order")
+	f.Intrinsic.Control.End
+F.Intrinsic.Control.EndIf
+
+'if multi piece WO
+f.Intrinsic.Control.If(v.Local.bMultiPiece,=,True)
+	'Get the Piece info from the multi piece WO table
+	f.Intrinsic.String.Build("SELECT LENGTH_FT, LENGTH_IN, SUM(TOTAL_FT) AS TOTAL_FT FROM GAB_4474_MULTI_PC_WO WHERE JOB = '{0}' AND SUFFIX = '{1}' GROUP BY LENGTH_FT, LENGTH_IN;",V.Global.sJob,V.Global.sSuffix,V.Local.sSQL)
+	f.ODBC.Connection!conx.executeandreturn(v.Local.sSQL,V.Local.sReturn)
+	
+	'Add lot/bin records to Call wrapper Data table
+	F.Intrinsic.String.Split(V.Local.sReturn,"#$#",v.Local.sReturn)
+	v.Local.iCount.set(0)
+	v.Local.fLotBinQty.Set(0)
+	f.Intrinsic.Control.For(v.Local.iCount,=,v.Local.sReturn.uBound)
+		f.Intrinsic.String.Split(v.Local.sReturn(v.Local.icount),"*!*",v.Local.sPieceInfo)
+		'calculate feet in decimal format for User7 field
+		f.Intrinsic.Math.ConvertToFloat(v.Local.sPieceInfo(0),v.Local.fLength_FT)
+		f.Intrinsic.Math.ConvertToFloat(v.Local.sPieceInfo(1),v.Local.fLength_IN)
+		f.Intrinsic.Math.Div(v.Local.fLength_IN,12,v.Local.fLength_IN)
+		F.Intrinsic.Math.Round(V.Local.fLength_IN,5,1,V.Local.fLength_IN)
+		f.Intrinsic.Math.Add(v.Local.fLength_FT,v.Local.fLength_IN,v.Local.fLength_Total)
+		F.Intrinsic.Math.Round(V.Local.fLength_Total,2,1,V.Local.fLength_Total)
+		'Add row to lib file datatable for callwrapper processing
+		f.Intrinsic.String.Build("{0}-{1}",v.Local.sPieceInfo(0),v.Local.sPieceInfo(1),v.Local.sSerial)
+		f.Data.DataTable.AddRow("2003File","WONum",v.Global.sJob,"WOSuffix",v.Global.sSuffix,"Bin",v.Global.sBin,"Serial",v.Local.sSerial,"SpecificQuantity",v.Local.sPieceInfo(2),"UserField7",v.Local.fLength_Total)
+		f.Intrinsic.Math.Add(v.Local.fLotBinQty,v.Local.sPieceInfo(2),v.Local.fLotBinQty)
+	f.Intrinsic.Control.Next(V.Local.iCount)
+	
+	'CHECK TO SEE IF LOT/BIN QTY FROM MULTI PIECE TABLE MATCHES WORK ORDER RUN QTY
+	f.Intrinsic.Math.ConvertToFloat(v.Local.sTotalQty,v.Local.fTotalQty)
+	'only if work order is multi piece
+	f.Intrinsic.Control.If(v.Local.bMultiPiece,=,True)
+		'f.Data.DataTable.Compute("2003File","Sum(SpecificQuantity)","",v.Local.fLotBinQty)
+		f.Intrinsic.Control.If(v.Local.fLotBinQty,<>,v.Local.fTotalQty)
+			f.Intrinsic.String.Build("Lot/Bin Qty '{0}' does not match Work Order Qty '{1}'. Continue?",v.Local.fLotBinQty,v.Local.fTotalQty,v.Local.sLotBinNotMatchingError)
+			f.Intrinsic.UI.Msgbox(v.Local.sLotBinNotMatchingError,"Lot/Bin Qty Issue",4,v.Local.sReturn)
+			f.Intrinsic.Control.SelectCase(v.Local.sReturn)
+			'YES
+			f.Intrinsic.Control.Case(6)
+				'do nothing let it try and go through.
+			'NO	
+			f.Intrinsic.Control.Case(7)
+				f.Intrinsic.Control.End
+			f.Intrinsic.Control.EndSelect
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.Else
+	'add non multi piece row to call wrapper DT
+	f.Data.DataTable.AddRow("2003File","WONum",v.Global.sJob,"WOSuffix",v.Global.sSuffix,"Bin",v.Global.sBin,"SpecificQuantity",v.Local.sTotalQty)
+f.Intrinsic.Control.EndIf
+'add row to CW DT
+f.Data.DataTable.AddRow("2003","CompanyCode",v.Caller.CompanyCode,"Terminal",v.Caller.Terminal,"Program","GAB_5189","Mode","NS","WONum",v.Global.sJob,"WOSuffix",v.Global.sSuffix,"XferYear",v.Local.sYear,"XferMonth",v.Local.sMonth,"XferDay",v.Local.sDay,"CloseWO",v.Local.sCloseJobFlag,"Quantity",v.Local.sTotalQty,"Cost",v.Local.sPieceCost,"Price",v.Local.sPrice,"PrintLabels","N","UpdateInv",v.Local.sUpdateInvFlag)
+'Call CW lib sub
+F.Intrinsic.Control.CallSub(2003Sync)
+
+'check to see if call wrapper processed properly
+v.Local.sCallWrapperReturn.Set(v.Ambient.CallWrapperReturn)
+f.Intrinsic.String.Split(v.Local.sCallWrapperReturn,"*!*",v.Local.sCallWrapperReturn)
+f.Intrinsic.String.Right(v.Local.sCallWrapperReturn(46),1,v.Local.sCallWrapperError)
+f.Intrinsic.Control.If(v.Local.sCallWrapperError,=,"1")
+	f.Intrinsic.String.Build("JOB: {3}{0}{0}SUFFIX: {4}{0}{0}{1}{0}{0}{2}{0}{0}SCRIPT: {5}",v.Ambient.NewLine,v.Local.sCallWrapperReturn(47),v.Local.sCallWrapperReturn(48),V.Global.sJob,V.Global.sSuffix,v.Caller.ScriptFile,v.Local.sCallWrapperError)
+	f.Intrinsic.UI.Msgbox(v.Local.sCallWrapperError,"WIP to FG Call Wrapper Error")
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.Else
+	f.Intrinsic.Control.If(v.Local.bMultiPiece,=,True)
+		f.Intrinsic.Control.CallSub(Alloc_to_SO_Mult_Pc)
+	f.Intrinsic.Control.Else
+		f.Intrinsic.Control.CallSub(Alloc_to_SO_Non_Mult_Pc)
+	f.Intrinsic.Control.EndIf
+	'call CW Lib
+	f.Intrinsic.Control.CallSub(7100Sync)
+f.Intrinsic.Control.EndIf
+
+Program.Sub.Main.End
+
+Program.Sub.Alloc_to_SO_Mult_Pc.Start
+v.Local.sSQL.Declare
+V.Local.iCount.Declare
+'update wait dialog
+f.Intrinsic.UI.InvokeWaitDialog("Processing Allocation...","Processing")
+
+'Grab the list of items to allocate, ACCOUNT FOR IGNORING STOCK ORDERS IN SQL STATEMENT
+f.Intrinsic.String.Build("SELECT ORDER_NO, LEFT(LINE,3) AS LINE, LENGTH_FT, LENGTH_IN, TOTAL_FT FROM GAB_4474_MULTI_PC_WO WHERE JOB = '{0}' AND SUFFIX = '{1}' AND ORDER_NO <> 'STOCK';",V.Global.sJob,V.Global.sSuffix,V.Local.sSQL)
+
+'Create DT
+F.Data.DataTable.CreateFromSQL("dtPieceDetail","conx",v.Local.sSQL)
+'ADD SERIAL COLUMN -- LENGTH(FT)-LENGTH(IN)
+F.Data.DataTable.AddExpressionColumn("dtPieceDetail","SERIAL","String","LENGTH_FT + '-' + LENGTH_IN")
+
+'Loop through DT and allocate each line to the sales order
+f.Intrinsic.Control.For(v.Local.iCount,0,v.DataTable.dtPieceDetail.RowCount--,1)
+	f.Data.DataTable.AddRow("7100","Type","R","Part",v.Global.sPart,"Rev",v.Global.sRevision,"Loc",v.Global.sLocation,"OrderQty",v.DataTable.dtPieceDetail(v.Local.iCount).TOTAL_FT!FieldVal,"SO",v.DataTable.dtPieceDetail(v.Local.iCount).ORDER_NO!FieldValRtrim,"SOLine",v.DataTable.dtPieceDetail(v.Local.iCount).LINE!FieldValRtrim,"Bin",v.Global.sBin,"Serial",v.DataTable.dtPieceDetail(v.Local.iCount).SERIAL!FieldValRtrim)
+f.Intrinsic.Control.Next(v.Local.iCount)
+
+Program.Sub.Alloc_to_SO_Mult_Pc.End
+
+Program.Sub.Alloc_to_SO_Non_Mult_Pc.Start
+v.Local.sSQL.Declare
+V.Local.iCount.Declare
+'update wait dialog
+f.Intrinsic.UI.InvokeWaitDialog("Processing Allocation...","Processing")
+
+'Grab the list of items to allocate
+f.Intrinsic.String.Build("SELECT ORDER_NO, LEFT(ORDER_LINE,3) AS ORDER_LINE, QTY_WO FROM V_ORDER_TO_WO WHERE JOB = '{0}' AND RTRIM(SUFFIX) = '{1}';",V.Global.sJob,V.Global.sSuffix,V.Local.sSQL)
+
+'Create DT
+F.Data.DataTable.CreateFromSQL("dtOrderInfo","conx",v.Local.sSQL)
+
+'Loop through DT and allocate each line to the sales order
+f.Intrinsic.Control.For(v.Local.iCount,0,v.DataTable.dtOrderInfo.RowCount--,1)
+	f.Data.DataTable.AddRow("7100","Type","R","Part",v.Global.sPart,"Rev",v.Global.sRevision,"Loc",v.Global.sLocation,"OrderQty",v.DataTable.dtOrderInfo(v.Local.iCount).QTY_WO!FieldVal,"SO",v.DataTable.dtOrderInfo(v.Local.iCount).ORDER_NO!FieldValRtrim,"SOLine",v.DataTable.dtOrderInfo(v.Local.iCount).ORDER_LINE!FieldValRtrim,"Bin",v.Global.sBin)
+f.Intrinsic.Control.Next(v.Local.iCount)
+
+Program.Sub.Alloc_to_SO_Non_Mult_Pc.End
+
+Program.Sub.Check_Table.Start
+V.Local.bTable.Declare
+f.ODBC.Connection!conTableCheck.openconnection(v.Ambient.PDSN,v.Ambient.PUser,v.Ambient.PPass)
+Function.ODBC.Connection!conTableCheck.TableExists("GAB_4474_MULTI_PC_WO",variable.local.bTable)
+f.ODBC.Connection!conTableCheck.Close
+f.Intrinsic.Control.If(v.Local.bTable,=,False)
+	f.Intrinsic.UI.Msgbox("This program requires ARC 4474 Multi Piece WO to be installed.","Error")
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.EndIf
+Program.Sub.Check_Table.End
